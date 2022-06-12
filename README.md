@@ -1,2 +1,2 @@
-# HaitiTarpClassification
-Data Science project using various classification models to identify presence of tarps in overhead images of Haiti
+# Haiti Tarp Classification
+I compared classification models, including KNN, SVM, Random Forest, etc. in their effectiveness at identifying the presence of blue tarps in pixel data from overhead images of Haiti. This project was based on a case study from the disaster releif efforts after a tragic hurricane struck Haiti. US military flew planes over Haiti and took thousands of images to locate potential survivors taking refuge under blue tarps. The goal was to build a classification model that could quickly and accurately identify these tarps and limit the number of false negatives (missed opportunities for potential rescues).  
