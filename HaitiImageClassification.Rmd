@@ -1,0 +1,1171 @@
+---
+title: "Disaster Relief Project: Part 2"
+author: "John Hazelton"
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    number_sections: true    
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: espresso    
+   
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error=TRUE,        # Keep compiling upon error
+                      collapse=FALSE,    # collapse by default
+                      echo=TRUE,         # echo code by default
+                      comment = "#>",    # change comment character
+                      fig.width = 6.5,     # set figure width
+                      fig.align = "center",# set figure position
+                      out.width = "80%", # set width of displayed images
+                      warning=TRUE,      # show R warnings
+                      message=TRUE)      # show R messages
+```
+
+<style>
+h1.title {
+  font-size: 2.2em; /* Title font size */
+}
+h1 {
+  font-size: 2em;   /* Header 1 font size */
+}
+h2 {
+  font-size: 1.5em;
+}
+h3 { 
+  font-size: 1.2em;
+}
+pre {
+  font-size: 0.8em;  /* Code and R output font size */
+}
+</style>
+
+
+**DS 6030 | Summer 2021 | University of Virginia | John Hazelton | jch5nb**
+
+*******************************************
+
+# Introduction 
+
+In the following analysis, five different classification methods are utilized to determine the best model for classifying blue tarps from image pixel color data. The data comes from high resolution geo-referenced images taken of the destruction across Haiti after the 2010 earthquake. These images were taken as part of an effort to aid the U.S. military in locating displaced persons living in shelters in the wreckage. These classification methods allow one to efficiently identify the presence of blue tarps, and thus makeshift shelters, so that food and water can be dispatched to the inhabitants much faster than it would otherwise take to read through each of the images by hand.    
+
+```{r load-packages, warning=FALSE, message=FALSE}
+# Load Required Packages
+library(tidyverse)
+library(caret)
+library(e1071)
+library(ROCR)
+library(pROC)
+library(ggplot2)
+library(reshape2)
+library(grid)
+library(gridExtra)
+library(tree)
+library(randomForest)
+```
+
+# EDA (Training Data)
+
+The Haiti imagery data was first loaded in from a csv file and column headers were attached. The first few rows of data can be seen below. The data is made up of just four variables: one classification variable, "Class", representing the type of object present in the image, and three quantitative variables, "Red", "Green", and "Blue", representing the prevalence of colors in the image's pixels.
+
+```{r read data, cache=TRUE}
+data = read.csv('HaitiPixels.csv') #load data
+head(data) #visualize first few rows of data
+attach(data) #attach data columns
+```
+
+Some initial exploratory data analysis was performed with pairwise correlations and plots (see below) for each of the variables. All images are made up of a combination of these three colors, with just slight differences in prevalence based on the objects in the images. This likely explains the strong correlations between colors (see below). From the boxplots below, it is apparent that red is clearly most prevalent in soil, while blue is most prevalent in blue tarps. 
+```{r eda, cache = TRUE}
+#Exploratory Data Analysis:
+summary(data)
+cor(data[,-1]) #see pairwise correlations of predictors (R, G, B)
+pairs(data[,-1], main='Pairwise Plots for Red, Green, Blue') #see pairwise plots of predictors (R, G, B)
+
+boxplot(Red~Class, main='Red vs Class')
+boxplot(Green~Class, main='Green vs Class')
+boxplot(Blue~Class, main='Blue vs Class')
+```
+
+To more directly explore the objective of identifying blue tarps, a new binary dummy variable (y) was created, with "1" representing blue tarps and "0" representing non-blue tarp objects (vegetation, soil, rooftop, and various non-tarp). The prevalence of blue tarps was calculated to be 0.0319. Now, looking at boxplots of colors plotted against "y", the difference in prevalence of blue between tarp and non-tarp objects is even clearer, while green also shows a higher prevalence among tarps (just to a lesser extent than blue), and red shows almost no difference between tarp and non-tarp.
+```{r eda2, cache = TRUE}
+#Create dummy variable for tarp v non-tarp:
+data$y = rep(0, nrow(data))
+data$y[Class=="Blue Tarp"] = 1
+data$y = factor(data$y, levels=c(0, 1))
+attach(data) #reattach data
+
+#prevalence of blue tarps:
+prev = nrow(data[y == 1, ]) / nrow(data)
+prev
+
+boxplot(Red~y, main='Red vs y')
+boxplot(Green~y, main='Green vs y')
+boxplot(Blue~y, main='Blue vs y')
+```
+
+# Model Training
+## Set-up 
+Before training any models, a train control variable was first setup to allow for performing cross validation on each of the models by splitting the data into k=10 folds/subsets.   
+```{r train_control, cache = TRUE}
+#Create k=10 folds/subsets:
+train_control = trainControl(method="cv", number=10)
+```
+
+## Logistic Regression
+Using the caret package, a logistic regression model was repeatedly trained on the 10 different folds, with the results averaged for a single estimation (see below). Predictors Red, Green, and Blue prove to all be significant at a 0.001 level of significance, yet blue has a positive coefficient, while red and green have negative coefficients. This makes sense, as blue pixels are positively contributing to the log odds of a blue tarp occurrence, whereas green and red are not. The model's average classification accuracy is 0.9953.
+```{r logit_train, cache = TRUE, warning=FALSE, message=FALSE}
+set.seed(10)
+
+#train our model with logit regression:
+model.glm = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="glm", 
+                  family=binomial())
+
+#Logit model results:
+model.glm
+summary(model.glm)
+```
+
+## LDA
+Next, this 10-fold CV training process was repeated for Linear Discriminant Analysis (LDA) below. A similarly high average accuracy value of 0.9839 was achieved for this model. 
+```{r lda_train, cache = TRUE}
+#train our model with linear discriminant analysis:
+model.lda = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="lda")
+
+#LDA model results:
+model.lda
+```
+
+## QDA
+Next, the training process was repeated for Quadratic Discriminant Analysis (QDA) below. This time, an average accuracy value of 0.9946 was achieved.
+```{r qda_train, cache = TRUE}
+#train our model with quadratic discriminant analysis:
+model.qda = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="qda")
+
+#QDA model results:
+model.qda
+```
+
+## KNN
+For K-Nearest Neighbors, the training process was repeated, but with an additional "tuneLength" parameter set to 10. This parameter allowed for the 10-fold model averages to be calculated at 10 different tuning values (or K values), and then searched to extract the k value that produced the best results. 
+```{r knn_train, cache = TRUE}
+#train our model with K-Nearest Neighbors:
+model.knn = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="knn", 
+                  tuneLength=10)
+
+#KNN model results:
+model.knn
+```
+
+### Tuning Parameter $k$
+While the caret package does this automatically, a "getBest" function was created below to search through the list of 10 results and extract the tuning parameter (k=5) that produced the highest average accuracy results (0.9973). To visualize how accuracy changes with K, a plot was produced below for the 10 models. 
+
+```{r knn_tuning, cache = TRUE}
+#Create function for extracting the best tuning parameter combination:
+getBest = function(trained) {
+  best.row = which(rownames(trained$results) == rownames(trained$bestTune))
+  best.model = trained$results[best.row, ]
+  best.model
+}
+
+#Apply fxn to our trained knn models:
+getBest(model.knn)
+
+#Store tuning parameter (k):
+knn.tune = getBest(model.knn)$k
+
+#Plot Accuracy vs Tuning Parameter (K)
+plot(model.knn, main="Accuracy vs # of Neighbors (K)", 
+     xlab="K # of Neighbors")
+```
+
+## Penalized Logit (ElasticNet)
+The caret package was used again to train a penalized logistic regression model, specifically elastic net. Similar to the process for KNN, a "tuneLength" parameter value was specified to 10, this time generating the model for 10 different alpha values with 10 different lambda values for each (100 total results). The first few results (all at alpha=0.1) can be seen below.  
+```{r elnet_train, cache = TRUE}
+#train our model with Penalized Logistic Regression (Elastic Net):
+model.elnet = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="glmnet", 
+                  tuneLength=10)
+
+#ElasticNet model results:
+head(model.elnet$results)
+```
+
+### Tuning Parameters
+The vast tuning grid of 100 results allowed for a thorough search process to determine the best tuning parameter combination of alpha and lambda. The model with the best accuracy used an alpha of 1, actually making it a lasso regression. The chosen lambda value was 1.923e-05, essentially mimicking a penalty of 0. These values make sense for this dataset, with only the three predictors Red, Green, and Blue, and each of them exhibiting a rather significant impact on the classification of tarp or non-tarp. As such, there is not too much concern for overfitting. To visualize how accuracy changes with alpha and lambda separately, plots were produced below for the 100 models.
+```{r elnet_tuning, cache = TRUE}
+#Apply getBest fxn to our trained elnet models to determine best tuning parameters:
+getBest(model.elnet)
+
+#Store tuning parameters (alpha, lambda):
+elnet.alpha = getBest(model.elnet)$alpha
+elnet.lambda = getBest(model.elnet)$lambda
+
+#Plot Accuracy vs Tuning Parameter (K)
+plot(model.elnet$results$alpha, model.elnet$results$Accuracy,
+     main="Accuracy vs Alpha", xlab="Alpha")
+plot(model.elnet$results$lambda, model.elnet$results$Accuracy,
+     main="Accuracy vs Lambda", xlab="Lambda")
+```
+
+## Random Forest (rf)
+The caret package was used again to train a Random Forest model. This time, we used a "tuneGrid" parameter to explicitly list the mtry values we wanted to try. In this case, with only 3 predictors (red, green, blue), the only options for mtry are 1, 2, or 3. By default, the caret package uses an ntree value of 500, and doesn't allow for tuning the ntree parameter. This makes sense, as performance of Random Forest models generally plateau once you are using enough trees. Here, the models w/ different mtry values were replicated using ntree=500 and ntree=1000 to see if increasing the number of trees past 500 had any significant effect. The results can be seen below.  
+```{r rf_train, cache = TRUE}
+#train our model with Random Forest
+set.seed(10)
+
+#Ntree = 500:
+model.rf_500 = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="rf", 
+                  tuneGrid = expand.grid(mtry = c(1, 2, 3)), 
+                  ntree = 500, 
+                  metric="Accuracy")
+
+#Ntree = 1000:
+model.rf_1000 = train(y ~ Red+Green+Blue, data=data, 
+                  trControl=train_control, method="rf", 
+                  tuneGrid = expand.grid(mtry = c(1, 2, 3)), 
+                  ntree = 1000, 
+                  metric="Accuracy")
+
+#Random Forest model results:
+model.rf_500$results
+model.rf_1000$results
+print(model.rf_500)
+print(model.rf_1000)
+
+```
+
+### Tuning Parameters
+The two tuning grids (above) allow us to determine the best tuning parameter combination of mtry and ntree. Clearly, increasing ntree to 1000 has little to no affect on performance. In fact, the model with the best accuracy here uses ntree=500 and an mtry of 2. To visualize how accuracy changes with mtry and ntree, a line plot is displayed below for the different models.
+```{r rf_tuning, cache = TRUE}
+#Apply getBest fxn to our trained rf models to determine best tuning parameters:
+model.rf = model.rf_500
+getBest(model.rf)
+
+#Store tuning parameters (mtry, ntree):
+rf.mtry = getBest(model.rf)$mtry
+rf.ntree = 500
+
+#Plot Accuracy vs Tuning Parameters:
+plot(model.rf$results$mtry, model.rf$results$Accuracy,
+     main="Accuracy vs mtry", xlab="mtry", ylab="Accuracy", 
+     type="l", col="blue", ylim=c(0.9965,0.9971))
+lines(model.rf_1000$results$mtry, model.rf_1000$results$Accuracy, col="red")
+legend(1, 0.9967, c("ntree=500", "ntree=1000"), col=c("blue", "red"), lwd=c(2,2))
+
+```
+
+## Support Vector Machine (SVM)
+For training the Support Vector Machine model, the E1071 package was used, allowing us to try linear, radial, and polynomial kernels. The hyperparameters cost, gamma, and degree were also tuned for their respective kernel models. This package also allows for specifying the number of k-folds for cross validation using the "tunecontrol" parameter, but we left this unchanged, as it already uses 10-fold by default. The results can be seen below.  
+```{r svm_train1, cache = TRUE}
+set.seed(10)
+
+#Use SVM w/ linear basis kernels:
+svm.linear = tune(svm, y ~ Red+Green+Blue, data=data, kernel="linear", 
+                  ranges=list(cost = c(0.01, 0.1, 1, 10, 100)))
+```
+
+```{r svm_train2, cache = TRUE}
+set.seed(10)
+
+#Use SVM w/ radial basis kernels
+svm.radial = tune(svm, y ~ Red+Green+Blue, data=data, kernel="radial", 
+                  ranges=list(gamma=c(0.01, 0.1, 1, 5), cost=c(0.1, 1, 10)))
+```
+
+```{r svm_train3, cache = TRUE}
+set.seed(10)
+
+#Use SVM w/ polynomial basis kernels
+svm.polynomial = tune(svm, y ~ Red+Green+Blue, data=data, kernel="polynomial", 
+                  ranges=list(degree=c(2,3,4), cost = c(0.1, 1, 10)))
+```
+
+```{r svm_train4, cache=TRUE}
+summary(svm.linear)
+summary(svm.radial)
+summary(svm.polynomial)
+```
+
+### Tuning Parameters
+The tuning grids (above) allow us to determine the best tuning parameter combinations for kernel, cost, and gamma/degree. 
+```{r svm_tuning, cache = TRUE}
+#Extract the best model, using svm() w/ best tuning parameters:
+model.svm = svm(y ~ Red+Green+Blue, data=data, kernel="radial", 
+                cost=svm.radial$best.parameters$cost,
+                gamma=svm.radial$best.parameters$gamma, probability=TRUE)
+
+#Store tuning parameters (kernel, cost, gamma):
+svm.kernel = "radial"
+svm.cost = svm.radial$best.parameters$cost
+svm.gamma = svm.radial$best.parameters$gamma
+```
+
+To visualize how error rate changes with these parameters, line plots are displayed below for the different models.
+```{r svm_tuning2, cache=TRUE}
+#Plot Accuracy vs Tuning Parameters:
+plot(svm.radial$performances$gamma, svm.radial$performances$error,
+     main="MSE vs gamma", xlab="gamma", ylab="MSE", type="l", col="blue")
+plot(svm.radial$performances$cost, svm.radial$performances$error, 
+     main="MSE vs cost", xlab="cost", ylab="MSE", type="l", col="green")
+
+```
+
+## ROC Curves
+After training models with the 7 different methods above, ROC curves and related AUC values were produced for each of the models below, utilizing the pROC package. All 7 of the models' ROC curves are tightly hugging the top left corner, indicating strong performance. This finding is supported by their extremely high respective AUROC values.
+```{r roc_curves, cache = TRUE, message=FALSE}
+#Generate ROC curves & AUROC values for each of the models:
+
+#Logit ROC:
+glm.probs = predict(model.glm, data, type="prob") #generate prob vector
+par(pty = "s")
+glm.roc = roc(as.numeric(data$y), glm.probs$"1", plot=TRUE, 
+                   legacy.axes=TRUE, percent=TRUE,
+                   xlab="False Positive Percentage (Specificity)", 
+                   ylab="True Positive Percentage (Sensitivity)", 
+                   main="ROC Curve - Logit",
+                   col="#377eb8", print.auc=TRUE)
+
+glm.auc = auc(glm.roc) #store our glm AUROC value
+
+
+#LDA ROC:
+lda.probs = predict(model.lda, data, type="prob")
+lda.roc = roc(as.numeric(data$y), lda.probs$"1", plot=TRUE, 
+              legacy.axes=TRUE, percent=TRUE,
+              xlab="False Positive Percentage (Specificity)", 
+              ylab="True Positive Percentage (Sensitivity)", 
+              main="ROC Curve - LDA",
+              col="#4daf4a", print.auc=TRUE)
+
+lda.auc = auc(lda.roc) #store our lda AUROC value
+
+
+#QDA ROC:
+qda.probs = predict(model.qda, data, type="prob")
+qda.roc = roc(as.numeric(data$y), qda.probs$"1", plot=TRUE, 
+              legacy.axes=TRUE, percent=TRUE,
+              xlab="False Positive Percentage (Specificity)", 
+              ylab="True Positive Percentage (Sensitivity)", 
+              main="ROC Curve - QDA",
+              col="#f03b20", print.auc=TRUE)
+
+qda.auc = auc(qda.roc) #store our qda AUROC value
+
+
+#KNN ROC:
+knn.probs = predict(model.knn, data, type="prob")
+knn.roc = roc(as.numeric(data$y), knn.probs$"1", plot=TRUE, 
+              legacy.axes=TRUE, percent=TRUE,
+              xlab="False Positive Percentage (Specificity)", 
+              ylab="True Positive Percentage (Sensitivity)", 
+              main="ROC Curve - KNN",
+              col="#756bb1", print.auc=TRUE)
+
+knn.auc = auc(knn.roc) #store our knn AUROC value
+
+
+#Penalized Logit ROC (ElasticNet):
+elnet.probs = predict(model.elnet, data, type="prob") 
+elnet.roc = roc(as.numeric(data$y), elnet.probs$"1", plot=TRUE,  
+                legacy.axes=TRUE, percent=TRUE,
+                xlab="False Positive Percentage (Specificity)", 
+                ylab="True Positive Percentage (Sensitivity)", 
+                main="ROC Curve - Penalized Logit",
+                col="#636363", print.auc=TRUE)
+
+elnet.auc = auc(elnet.roc) #store our elnet AUROC value
+
+
+#Random Forest ROC:
+rf.probs = predict(model.rf, data, type="prob") 
+rf.roc = roc(as.numeric(data$y), rf.probs$"1", plot=TRUE,  
+                legacy.axes=TRUE, percent=TRUE,
+                xlab="False Positive Percentage (Specificity)", 
+                ylab="True Positive Percentage (Sensitivity)", 
+                main="ROC Curve - Random Forest",
+                col="orange", print.auc=TRUE)
+
+rf.auc = auc(rf.roc) #store our random forest AUROC value
+
+
+#SVM ROC:
+svm.probs = predict(model.svm, data, type="prob", probability=TRUE) 
+svm.roc = roc(as.numeric(data$y), attr(svm.probs, "probabilities")[,1], 
+                 plot=TRUE, legacy.axes=TRUE, percent=TRUE,
+                 xlab="False Positive Percentage (Specificity)", 
+                 ylab="True Positive Percentage (Sensitivity)", 
+                 main="ROC Curve - SVM",
+                 col="yellow", print.auc=TRUE)
+
+svm.auc = auc(svm.roc) #store our svm AUROC value
+
+
+#Store all of our AUROC values in vector to add to performance table later:
+auroc = rep(NULL, 7)
+auroc[1] = glm.auc
+auroc[2] = lda.auc
+auroc[3] = qda.auc
+auroc[4] = knn.auc
+auroc[5] = elnet.auc
+auroc[6] = rf.auc
+auroc[7] = svm.auc
+
+```
+
+The ROC curves were also plotted a second time, overlaid on a single graph for comparison purposes. Again, all of the models have high AUC values and are thus overlapping quite a bit in the top left of the graph.
+```{r roc_curves2, cache=TRUE, message=FALSE}
+#Now plot all ROC curves overlaid on one graph:
+
+#Logit ROC:
+par(pty = "s")
+roc(as.numeric(data$y), glm.probs$"1", plot=TRUE, 
+                   legacy.axes=TRUE, percent=TRUE,
+                   xlab="False Positive Percentage (Specificity)", 
+                   ylab="True Positive Percentage (Sensitivity)", 
+                   main="ROC Curve (combined)",
+                   col="#377eb8", print.auc=TRUE, print.auc.y=95, 
+                   print.auc.x=80)
+
+#LDA ROC:
+plot.roc(as.numeric(data$y), lda.probs$"1", legacy.axes=TRUE, percent=TRUE,
+         col="#4daf4a", print.auc=TRUE, add=TRUE, print.auc.y=88, 
+         print.auc.x=80)
+
+#QDA ROC:
+plot.roc(as.numeric(data$y), qda.probs$"1", legacy.axes=TRUE, percent=TRUE,
+         col="#f03b20", print.auc=TRUE, add=TRUE, print.auc.y=81, 
+         print.auc.x=80)
+
+#KNN ROC:
+plot.roc(as.numeric(data$y), knn.probs$"1", legacy.axes=TRUE, percent=TRUE,
+         col="#756bb1", print.auc=TRUE, add=TRUE, print.auc.y=74, 
+         print.auc.x=80)
+
+#Penalized Logit ROC:
+plot.roc(as.numeric(data$y), elnet.probs$"1", legacy.axes=TRUE, 
+         percent=TRUE, col="#636363", print.auc=TRUE, add=TRUE, 
+         print.auc.y=67, print.auc.x=80)
+
+#Random Forest ROC:
+plot.roc(as.numeric(data$y), rf.probs$"1", legacy.axes=TRUE, 
+         percent=TRUE, col="orange", print.auc=TRUE, add=TRUE, 
+         print.auc.y=60, print.auc.x=80)
+
+#SVM ROC:
+plot.roc(as.numeric(data$y), attr(svm.probs, "probabilities")[,1], 
+         legacy.axes=TRUE, percent=TRUE, col="yellow", print.auc=TRUE, 
+         add=TRUE, print.auc.y=53, print.auc.x=80)
+
+
+legend(40, 95, c("Logit", "LDA", "QDA", "KNN", "Elnet", "RF", "SVM"), 
+                   col=c("#377eb8", "#4daf4a", "#f03b20", "#756bb1",
+                   "#636363", "orange", "yellow"), lwd=c(2,2))
+```
+
+
+## Threshold Selection
+#### Classic Method
+Generally, using these ROC curves, the optimal threshold value is chosen to give the highest specificity + sensitivity on the data, essentially extracting the highest leftmost point on the curve. To find these values, the "coords" function from the pROC package was used with our previously created roc plot objects. 
+
+#### Weighted Calculation
+After an initial trial run with these "best threshold" values, it was clear they produced strong results, but were not necessarily in line with the overall objective of the modeling: being able to accurately identify blue tarps as part of a rescue effort. As such, an additional parameter, "best.weights" was used to weight the best threshold calculation, taking into account both the prevalence of blue tarps and the greater cost of a false negative (falsely identifying something as non-tarp) as opposed to a false positive (falsely identifying something as tarp). The relative cost value between these two outcomes was set to two, as we considered missing a tarp (and potential rescue) was twice as fatal as the wasted effort associated with deeming a non-tarp object as a tarp.
+```{r thresholds}
+#Create vector to determine how pROC weights its bets threshold calculation
+#First value represents relative cost of false neg to false pos
+#Second value represents prevalence (proportion of blue tarps in population)
+thresh.weight = c(2, prev) 
+
+#obtain best threshold values:
+glm.thresh = coords(glm.roc, "best", ret = "threshold", 
+                    best.weights=thresh.weight)
+lda.thresh = coords(lda.roc, "best", ret = "threshold", 
+                    best.weights=thresh.weight)
+qda.thresh = coords(qda.roc, "best", ret = "threshold",
+                    best.weights=thresh.weight)
+knn.thresh = coords(knn.roc, "best", ret = "threshold",
+                    best.weights=thresh.weight)
+elnet.thresh = coords(elnet.roc, "best", ret = "threshold",
+                      best.weights=thresh.weight)
+rf.thresh = coords(rf.roc, "best", ret = "threshold",
+                   best.weights=thresh.weight)
+svm.thresh = coords(svm.roc, "best", ret = "threshold",
+                    best.weights=thresh.weight)
+
+#store threshold values in vector to add to performance table:
+threshold = rep(NULL, 7)
+threshold[1] = glm.thresh[[1]]
+threshold[2] = lda.thresh[[1]]
+threshold[3] = qda.thresh[[1]]
+threshold[4] = knn.thresh[[1]]
+threshold[5] = elnet.thresh[[1]]
+threshold[6] = rf.thresh[[1]]
+threshold[7] = svm.thresh[[1]]
+
+```
+
+
+### Confusion Matrices
+After selecting these threshold parameters, they were then applied to each of the 7 models' estimated probabilities to generate predictions, confusion matrices, and values for TPR, FPR, accuracy, and precision. The confusion matrices for Logit, LDA, QDA, KNN, and ElasticNet can be seen below, in that order.
+```{r conf_matrices, cache = TRUE}
+#Generate confusion matrices for each model:
+
+#Logit Model:
+glm.pred = rep(0, nrow(data))
+glm.pred[glm.probs[,1] < glm.thresh[[1]]] = 1
+glm.pred = factor(glm.pred, levels=c(0, 1))
+glm.conf.matrix = confusionMatrix(glm.pred, data$y)
+glm.conf.matrix$table
+#Extract tpr, fpr, precision, & accuracy from matrix:
+glm.tpr = glm.conf.matrix$byClass["Sensitivity"][[1]]
+glm.fpr = 1 - glm.conf.matrix$byClass["Specificity"][[1]]
+glm.precision = glm.conf.matrix$byClass["Pos Pred Value"][[1]]
+glm.accuracy = glm.conf.matrix$overall["Accuracy"][[1]]
+
+
+#LDA Model:
+lda.pred = rep(0, nrow(data))
+lda.pred[lda.probs[,1] < lda.thresh[[1]]] = 1
+lda.pred = factor(lda.pred, levels=c(0, 1))
+lda.conf.matrix = confusionMatrix(lda.pred, data$y)
+lda.conf.matrix$table
+
+lda.tpr = lda.conf.matrix$byClass["Sensitivity"][[1]]
+lda.fpr = 1 - lda.conf.matrix$byClass["Specificity"][[1]]
+lda.precision = lda.conf.matrix$byClass["Pos Pred Value"][[1]]
+lda.accuracy = lda.conf.matrix$overall["Accuracy"][[1]]
+
+
+#QDA Model:
+qda.pred = rep(0, nrow(data))
+qda.pred[qda.probs[,1] < qda.thresh[[1]]] = 1
+qda.pred = factor(qda.pred, levels=c(0, 1))
+qda.conf.matrix = confusionMatrix(qda.pred, data$y)
+qda.conf.matrix$table
+
+qda.tpr = qda.conf.matrix$byClass["Sensitivity"][[1]]
+qda.fpr = 1 - qda.conf.matrix$byClass["Specificity"][[1]]
+qda.precision = qda.conf.matrix$byClass["Pos Pred Value"][[1]]
+qda.accuracy = qda.conf.matrix$overall["Accuracy"][[1]]
+
+
+#KNN Model:
+knn.pred = rep(0, nrow(data))
+knn.pred[knn.probs[,1] < knn.thresh[[1]]] = 1
+knn.pred = factor(knn.pred, levels=c(0, 1))
+knn.conf.matrix = confusionMatrix(knn.pred, data$y)
+knn.conf.matrix$table
+
+knn.tpr = knn.conf.matrix$byClass["Sensitivity"][[1]]
+knn.fpr = 1 - knn.conf.matrix$byClass["Specificity"][[1]]
+knn.precision = knn.conf.matrix$byClass["Pos Pred Value"][[1]]
+knn.accuracy = knn.conf.matrix$overall["Accuracy"][[1]]
+
+
+#ElasticNet Model:
+elnet.pred = rep(0, nrow(data))
+elnet.pred[elnet.probs[,1] < elnet.thresh[[1]]] = 1
+elnet.pred = factor(elnet.pred, levels=c(0, 1))
+elnet.conf.matrix = confusionMatrix(elnet.pred, data$y)
+elnet.conf.matrix$table
+
+elnet.tpr = elnet.conf.matrix$byClass["Sensitivity"][[1]]
+elnet.fpr = 1 - elnet.conf.matrix$byClass["Specificity"][[1]]
+elnet.precision = elnet.conf.matrix$byClass["Pos Pred Value"][[1]]
+elnet.accuracy = elnet.conf.matrix$overall["Accuracy"][[1]]
+
+
+#RandomForest Model:
+rf.pred = rep(0, nrow(data))
+rf.pred[rf.probs[,1] < rf.thresh[[1]]] = 1
+rf.pred = factor(rf.pred, levels=c(0, 1))
+rf.conf.matrix = confusionMatrix(rf.pred, data$y)
+rf.conf.matrix$table
+
+rf.tpr = rf.conf.matrix$byClass["Sensitivity"][[1]]
+rf.fpr = 1 - rf.conf.matrix$byClass["Specificity"][[1]]
+rf.precision = rf.conf.matrix$byClass["Pos Pred Value"][[1]]
+rf.accuracy = rf.conf.matrix$overall["Accuracy"][[1]]
+
+
+#SVM Model:
+svm.pred = rep(0, nrow(data))
+svm.pred[attr(svm.probs, "probabilities")[,1] < svm.thresh[[1]]] = 1
+svm.pred = factor(svm.pred, levels=c(0, 1))
+svm.conf.matrix = confusionMatrix(svm.pred, data$y)
+svm.conf.matrix$table
+
+svm.tpr = svm.conf.matrix$byClass["Sensitivity"][[1]]
+svm.fpr = 1 - svm.conf.matrix$byClass["Specificity"][[1]]
+svm.precision = svm.conf.matrix$byClass["Pos Pred Value"][[1]]
+svm.accuracy = svm.conf.matrix$overall["Accuracy"][[1]]
+
+
+#Create vectors to store model values for our performance table:
+accuracy = rep(NULL, 7)
+tpr = rep(NULL, 7)
+fpr = rep(NULL, 7)
+precision = rep(NULL, 7)
+
+#Store the result values:
+accuracy[1] = lda.accuracy
+accuracy[2] = lda.accuracy
+accuracy[3] = qda.accuracy
+accuracy[4] = knn.accuracy
+accuracy[5] = elnet.accuracy
+accuracy[6] = rf.accuracy
+accuracy[7] = svm.accuracy
+tpr[1] = lda.tpr
+tpr[2] = lda.tpr
+tpr[3] = qda.tpr
+tpr[4] = knn.tpr
+tpr[5] = elnet.tpr
+tpr[6] = rf.tpr
+tpr[7] = svm.tpr
+fpr[1] = lda.fpr
+fpr[2] = lda.fpr
+fpr[3] = qda.fpr
+fpr[4] = knn.fpr
+fpr[5] = elnet.fpr
+fpr[6] = rf.fpr
+fpr[7] = svm.fpr
+precision[1] = lda.precision
+precision[2] = lda.precision
+precision[3] = qda.precision
+precision[4] = knn.precision
+precision[5] = elnet.precision
+precision[6] = rf.precision
+precision[7] = svm.precision
+```
+
+# Results - CV Performance Table
+Finally, after training models using 10-fold cross validation for the 7 different methods, the resulting values for threshold, AUROC, accuracy, TPR, FPR, precision, and tuning parameters can be seen in the table below. 
+```{r results}
+#Performance Table:
+perform.table = data.frame(matrix(ncol=8, nrow=7))
+colnames(perform.table) = c('Model', 'Tuning', 'AUROC', 'Threshold', 
+                            'Accuracy', 'TPR', 'FPR', 'Precision')
+
+perform.table$Model = c('Log Reg', 'LDA', 'QDA', 'KNN', 'Penalized Log Reg', 
+                        'Random Forest', 'SVM')
+
+perform.table$Threshold = threshold
+perform.table$AUROC = auroc
+perform.table$Accuracy = accuracy
+perform.table$TPR = tpr
+perform.table$FPR = fpr
+perform.table$Precision = precision
+perform.table$Tuning[4] = paste("K: ", knn.tune, sep="")
+perform.table$Tuning[5] = paste("Alpha: ", elnet.alpha, ",  Lambda: ", 
+                                format(elnet.lambda, digits=4), sep="")
+perform.table$Tuning[6] = paste("mtry: ", rf.mtry, ",  ntree: ", rf.ntree,
+                                sep="")
+perform.table$Tuning[7] = paste("kernel: ", svm.kernel, ",  cost: ", svm.cost,
+                                ", gamma: ", svm.gamma, sep="")
+
+perform.table
+```
+
+## Extended Results (False Negatives)
+In addition to the performance table above, false negative rates were calculated for each of the models below. This additional metric is arguably the most important in terms of maximizing rescues, and was heavily considered in the modeling and decision process as a focus, while being willing to sacrifice some performance on the other metrics. 
+```{r results2}
+#Calculate False Negatives:
+
+glm.fnr = glm.conf.matrix$table[2,1] / (glm.conf.matrix$table[2,1] + 
+                                              glm.conf.matrix$table[1,1])
+lda.fnr = lda.conf.matrix$table[2,1] / (lda.conf.matrix$table[2,1] + 
+                                              lda.conf.matrix$table[1,1])
+qda.fnr = qda.conf.matrix$table[2,1] / (qda.conf.matrix$table[2,1] + 
+                                              qda.conf.matrix$table[1,1])
+knn.fnr = knn.conf.matrix$table[2,1] / (knn.conf.matrix$table[2,1] + 
+                                              knn.conf.matrix$table[1,1])
+elnet.fnr = elnet.conf.matrix$table[2,1] / (elnet.conf.matrix$table[2,1] + 
+                                              elnet.conf.matrix$table[1,1])
+rf.fnr = rf.conf.matrix$table[2,1] / (rf.conf.matrix$table[2,1] + 
+                                              rf.conf.matrix$table[1,1])
+svm.fnr = svm.conf.matrix$table[2,1] / (svm.conf.matrix$table[2,1] + 
+                                             svm.conf.matrix$table[1,1])
+
+cat("Logit:", glm.fnr, "\n")
+cat("LDA:", lda.fnr, "\n")
+cat("QDA:", qda.fnr, "\n")
+cat("KNN:", knn.fnr, "\n")
+cat("ElasticNet:", elnet.fnr, "\n")
+cat("RandomForest:", rf.fnr, "\n")
+cat("SVM:", svm.fnr)
+```
+
+# EDA (Holdout Data)
+After training the 7 model types using cross validation, tuning their parameters, setting their thresholds, and calculating their performance metrics, we now load in the hold-out data to test our finalized models. The hold-out data is sourced from 8 different tab-delimited txt files, each of varying lengths. Since our training data only included the three variables for red, green, and blue pixels (our main focus), we extract only those variables from the hold-out data as well (columns titled B1, B2, and B3). 
+```{r read holdout_data, message=FALSE, cache=TRUE}
+#Read in data from txt files
+#Skip first several lines of text & headers - we will assign our own headers
+#Extract only columns B1, B2, B3, represnting the rgb colors
+
+#Start w/ all the non-tarp data files (removing ID column):
+d1 = read.table('Hold+Out+Data/orthovnir057_ROI_NON_Blue_Tarps.txt', skip=8)[,8:10]
+d2 = read.table('Hold+Out+Data/orthovnir067_ROI_NOT_Blue_Tarps.txt', skip=8)[,8:10]
+d3 = read.table('Hold+Out+Data/orthovnir069_ROI_NOT_Blue_Tarps.txt', skip=8)[,8:10]
+d4 = read.table('Hold+Out+Data/orthovnir078_ROI_NON_Blue_Tarps.txt', skip=8)[,8:10]
+
+#Then tarp data files (removing ID column) - note 2nd file only has rgb fields:
+d5 = read.table('Hold+Out+Data/orthovnir067_ROI_Blue_Tarps.txt', skip=8)[,8:10]
+d6 = read.table('Hold+Out+Data/orthovnir067_ROI_Blue_Tarps_data.txt', skip=1)
+d7 = read.table('Hold+Out+Data/orthovnir069_ROI_Blue_Tarps.txt', skip=8)[,8:10]
+d8 = read.table('Hold+Out+Data/orthovnir078_ROI_Blue_Tarps.txt', skip=8)[,8:10]
+
+```
+
+## EDA Density Plots - Non-tarp
+The separate data files must be merged into one set, but first, we conduct some exploratory data analysis, making comparisons between the txt files. This is done to make sure the data is reasonable and doesn't include duplicates, erroneous records, etc., before we merge them together. Below, density plots for each of the non-tarp data files are displayed in a grid format (Auto-assigned column names V8, V9, and V10 represent colors Red, Green, and Blue, respectively). All four plots seem reasonable, with blue showing the highest frequencies for low pixel prevalence, as expected for non-tarp objects. The summary statistics are also reasonable with no values exceeding the rgb max of 255 or falling below 0. 
+```{r holdout_nontarp eda, cache=TRUE, message=FALSE}
+#Create density plots to compare the color distributions b/w the non-tarp datasets:
+dens1 = melt(d1)
+dens2 = melt(d2)
+dens3 = melt(d3)
+dens4 = melt(d4)
+gg1 = ggplot(dens1, aes(x=value, fill=variable)) + geom_density(alpha=0.5) + 
+            ggtitle('Density Plot for RGBs\n(non-tarp file 1)') + xlab('pixels')
+gg2 = ggplot(dens2, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(non-tarp file 2)') + xlab('pixels')
+gg3 = ggplot(dens3, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(non-tarp file 3)') + xlab('pixels')
+gg4 = ggplot(dens4, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(non-tarp file 4)') + xlab('pixels')
+
+#show plots for 4 data files in 2x2 grid:
+grid.arrange(gg1, gg2, gg3, gg4, nrow=2)
+
+#show summary stats for the 4 data files:
+summary(d1)
+summary(d2)
+summary(d3)
+summary(d4)
+
+#combine files
+data.nontarp = rbind(d1, d2, d3, d4)
+```
+
+## EDA Density Plots - Tarp
+Similarly, for the tarp data files, we conduct some initial EDA between files. The density plots seem reasonable, this time with blue showing much greater frequencies of high pixel values than the other colors, as expected for tarps. Interestingly, the plots for the first two files look eerily similar if not identical. This may be an indication of duplicates or overlapping datasets. This is confirmed once we check for duplicates and see that datasets 5 and 6 are identical, with the same number of records and all of their records being duplicates. This allows us to toss one out one of these sets before merging.  
+```{r holdout_tarp eda, cache=TRUE}
+#Create density plots to compare the color distributions b/w the tarp datasets:
+dens5 = melt(d5)
+dens6 = melt(d6)
+dens7 = melt(d7)
+dens8 = melt(d8)
+gg5 = ggplot(dens5, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(tarp file 5)') + xlab('pixels')
+gg6 = ggplot(dens6, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(tarp file 6)') + xlab('pixels')
+gg7 = ggplot(dens7, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(tarp file 7)') + xlab('pixels')
+gg8 = ggplot(dens8, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+            ggtitle('Density Plot for RGBs\n(tarp file 8)') + xlab('pixels')
+
+#show plots for 4 data files in 2x2 grid:
+grid.arrange(gg5, gg6, gg7, gg8, nrow=2)
+
+#show summary stats for the 4 data files:
+summary(d5)
+summary(d6)
+summary(d7)
+summary(d8)
+
+#Check duplicates:
+colnames(d6) = c("V8", "V9", "V10")
+combined.tarp = rbind(d5, d6, d7, d8)
+
+cat("Total records combined in files 5 and 6: ", nrow(d5)*2, "\n")
+cat("Duplicated records between those files: ", 
+    length(duplicated(combined.tarp[0:(nrow(d5)*2),])), '\n')
+
+#exclude dataset "d6"
+data.tarp = rbind(d5, d7, d8)
+```
+
+## EDA Plots - Train v Test
+Now, after doing some initial EDA and cleaning of the data records, we combine the non-tarp and tarp data files into one holdout set, add appropriate column headers, and create a dummy variable representing the binary classes, tarp or non-tarp. We also perform some EDA, comparing this holdout set to the original training set. From the density plots displayed below, it is clear there is quite a different distribution of colors between the train and test sets, with train showing a somewhat bimodal distribution for the frequencies for blue pixels, whereas the test stet is unimodal for blue, centered solely at a low pixel count. This might suggest an overall greater prevalence of blue tarps within the training set, yet when comparing them, the prevalence values are nearly identical at 0.03128 and 0.03197 for test and train, respectively. From the boxplots, we also see that the distributions of colors for tarp and non-tarp are vastly different between the two datasets. Most notably, the ranges for pixel counts for each of the colors are much greater for non-tarp objects in the training dataset. The difference in median values between tarp and non-tarp for blue are nearly the same between datasets, yet the median values for the test set just seem to be shifted down, centered at lower pixel ranges.
+```{r holdout eda, cache=TRUE, message=FALSE}
+##Now combine non-tarp & tarp datasets & rename col headers:
+data.test = rbind(data.nontarp, data.tarp)
+colnames(data.test) = c("Red", "Green", "Blue")
+
+##Create dummy variable for tarp v non-tarp:
+data.test$y = rep(1, nrow(data.test))
+data.test$y[1:nrow(data.nontarp)] = 0
+data.test$y = factor(data.test$y, levels=c(0, 1))
+#attach(data.test) #attach data
+
+
+#Look at summary stats & compare to original/train dataset:
+summary(data.test)
+summary(data[,-1])
+
+
+#Look at density plots of for the two different datasets 
+dens.train = melt(data[,2:4])
+dens.test = melt(data.test[,1:3])
+gg.train = ggplot(dens.train, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+                  ggtitle('Density Plot for RGBs\n(Train Set)') + xlab('pixels')
+gg.test = ggplot(dens.test, aes(x=value, fill=variable)) + geom_density(alpha=0.5) +
+                 ggtitle('Density Plot for RGBs\n(Test Set)') + xlab('pixels')
+
+
+#show density plots side-by-side for train & test sets:
+grid.arrange(gg.train, gg.test, nrow=1)
+
+
+#Look at prevalence of blue tarps b/w the two datasets:
+prev.test = nrow(data.test[y == 1, ]) / nrow(data.test)
+cat("Blue Prevalence in Test: ", prev.test, "\n")
+cat("Blue Prevalence in Train: ", prev, "\n")
+
+#Look at boxplots for train & test:
+par(mfrow=c(3,2))
+
+boxplot(data$Red ~ data$y, main='Red vs Tarp/Non-Tarp (Train)', 
+        horizontal=TRUE, col="red")
+boxplot(data.test$Red ~ data.test$y, main='Red vs Tarp/Non-Tarp (Test)', 
+        horizontal=TRUE, col="red")
+boxplot(data$Green ~ data$y, main='Green vs Tarp/Non-Tarp(Train)', 
+        horizontal=TRUE, col="green")
+boxplot(data.test$Green ~ data.test$y, main='Green vs Tarp/Non-Tarp (Test)', 
+        horizontal=TRUE, col="green")
+boxplot(data$Blue ~ data$y, main='Blue vs Tarp/Non-Tarp(Train)', 
+        horizontal=TRUE, col="blue")
+boxplot(data.test$Blue ~ data.test$y, main='Blue vs Tarp/Non-Tarp (Test)', 
+        horizontal=TRUE, col="blue")
+
+```
+
+# ROC Curves (Holdout)
+ROC curves for the various models are produced once again, this time using the newly cleaned and merged holdout data set. The curves are overlaid on a single graph for comparison purposes, though all of the models have high AUC values and are thus overlapping quite a bit.
+```{r roc_curves holdout, cache=TRUE, message=FALSE}
+
+#Logit ROC:
+glm.probs.test = predict(model.glm, data.test, type="prob") #generate prob vector
+par(pty = "s")
+glm.roc.test = roc(as.numeric(data.test$y), glm.probs.test$"1", plot=TRUE, 
+                   legacy.axes=TRUE, percent=TRUE,
+                   xlab="False Positive Percentage (Specificity)", 
+                   ylab="True Positive Percentage (Sensitivity)", 
+                   main="ROC Curves (Test Set)",
+                   col="#377eb8", print.auc=TRUE, print.auc.y=85, 
+                   print.auc.x=80)
+glm.auc.test = auc(glm.roc.test) #store our glm AUROC value
+
+
+#LDA ROC:
+lda.probs.test = predict(model.lda, data.test, type="prob")
+lda.roc.test = plot.roc(as.numeric(data.test$y), lda.probs.test$"1", legacy.axes=TRUE, 
+                        percent=TRUE, col="#4daf4a", print.auc=TRUE, add=TRUE, 
+                        print.auc.y=78, print.auc.x=80)
+lda.auc.test = auc(lda.roc.test) #store our lda AUROC value
+
+
+#QDA ROC:
+qda.probs.test = predict(model.qda, data.test, type="prob")
+qda.roc.test = plot.roc(as.numeric(data.test$y), qda.probs.test$"1", legacy.axes=TRUE, 
+                        percent=TRUE, col="#f03b20", print.auc=TRUE, add=TRUE, 
+                        print.auc.y=71, print.auc.x=80)
+qda.auc.test = auc(qda.roc.test) #store our qda AUROC value
+
+
+#KNN ROC:
+knn.probs.test = predict(model.knn, data.test, type="prob")
+knn.roc.test = plot.roc(as.numeric(data.test$y), knn.probs.test$"1", legacy.axes=TRUE, 
+                        percent=TRUE, col="#756bb1", print.auc=TRUE, add=TRUE, 
+                        print.auc.y=64, print.auc.x=80)
+knn.auc.test = auc(knn.roc.test) #store our knn AUROC value
+
+
+#Penalized Logit (ElasticNet) ROC:
+elnet.probs.test = predict(model.elnet, data.test, type="prob")
+elnet.roc.test = plot.roc(as.numeric(data.test$y), elnet.probs.test$"1", legacy.axes=TRUE, 
+                          percent=TRUE, col="#636363", print.auc=TRUE, add=TRUE, 
+                          print.auc.y=57, print.auc.x=80)
+elnet.auc.test = auc(elnet.roc.test) #store our elnet AUROC value
+
+
+#Random Forest ROC:
+rf.probs.test = predict(model.rf, data.test, type="prob") 
+rf.roc.test = plot.roc(as.numeric(data.test$y), rf.probs.test$"1", legacy.axes=TRUE, 
+                       percent=TRUE, col="orange", print.auc=TRUE, add=TRUE, 
+                       print.auc.y=50, print.auc.x=80)
+rf.auc.test = auc(rf.roc.test) #store our random forest AUROC value
+
+
+#SVM ROC:
+svm.probs.test = predict(model.svm, data.test, type="prob", probability=TRUE)
+svm.roc.test = plot.roc(as.numeric(data.test$y), attr(svm.probs.test, "probabilities")[,1], 
+                         legacy.axes=TRUE, percent=TRUE, col="yellow", print.auc=TRUE, 
+                         add=TRUE, print.auc.y=43, print.auc.x=80)
+svm.auc.test = auc(svm.roc.test) #store our svm AUROC value
+
+
+legend(40, 95, c("Logit", "LDA", "QDA", "KNN", "Elnet", "RF", "SVM"), 
+                   col=c("#377eb8", "#4daf4a", "#f03b20", "#756bb1",
+                   "#636363", "orange", "yellow"), lwd=c(2,2))
+
+
+#Store all of our AUROC values in vector to add to performance table later:
+auroc.test = rep(NULL, 7)
+auroc.test[1] = glm.auc.test
+auroc.test[2] = lda.auc.test
+auroc.test[3] = qda.auc.test
+auroc.test[4] = knn.auc.test
+auroc.test[5] = elnet.auc.test
+auroc.test[6] = rf.auc.test
+auroc.test[7] = svm.auc.test
+```
+
+# Threshold Selection (Holdout)
+As we calculate thresholds a second time, now for holdout data, we again use the "best.weights" parameter for calculating best thresholds, taking into account both the prevalence of blue tarps and the greater cost of a false negative (falsely identifying something as non-tarp) as opposed to a false positive (falsely identifying something as tarp). The relative cost value between these two outcomes was set to two, as we considered missing a tarp (and potential rescue) was twice as fatal as the wasted effort associated with deeming a non-tarp object as a tarp.
+```{r thresholds holdout, cache=TRUE}
+#Create vector to determine how pROC weights its bets threshold calculation
+#First value represents relative cost of false neg to false pos
+#Second value represents prevalence (proportion of blue tarps in population)
+thresh.weight.test = c(2, prev.test) 
+
+#obtain best threshold values:
+glm.thresh.test = coords(glm.roc.test, "best", ret = "threshold", 
+                         best.weights=thresh.weight.test)
+lda.thresh.test = coords(lda.roc.test, "best", ret = "threshold", 
+                         best.weights=thresh.weight.test)
+qda.thresh.test = coords(qda.roc.test, "best", ret = "threshold",
+                         best.weights=thresh.weight.test)
+knn.thresh.test = coords(knn.roc.test, "best", ret = "threshold",
+                         best.weights=thresh.weight.test)
+elnet.thresh.test = coords(elnet.roc.test, "best", ret = "threshold",
+                           best.weights=thresh.weight.test)
+rf.thresh.test = coords(rf.roc.test, "best", ret = "threshold",
+                        best.weights=thresh.weight.test)
+svm.thresh.test = coords(svm.roc.test, "best", ret = "threshold",
+                         best.weights=thresh.weight.test)
+
+#store threshold values in vector to add to performance table:
+threshold.test = rep(NULL, 7)
+threshold.test[1] = glm.thresh.test[[1]]
+threshold.test[2] = lda.thresh.test[[1]]
+threshold.test[3] = qda.thresh.test[[1]]
+threshold.test[4] = knn.thresh.test[[1]]
+threshold.test[5] = elnet.thresh.test[[1]]
+threshold.test[6] = rf.thresh.test[[1]]
+threshold.test[7] = svm.thresh.test[[1]]
+```
+
+# Confusion Matrices (Holdout)
+After selecting these threshold parameters, we again apply them to each of the 7 models' estimated probabilities to generate predictions, confusion matrices, and values for TPR, FPR, accuracy, and precision. The confusion matrices for the holdout dataset are displayed below.
+```{r conf_matrices holdout, cache = TRUE}
+#Generate confusion matrices for each model:
+
+#Logit Model:
+glm.pred.test = rep(0, nrow(data.test))
+glm.pred.test[glm.probs.test[,1] < glm.thresh.test[[1]]] = 1
+glm.pred.test = factor(glm.pred.test, levels=c(0, 1))
+glm.conf.matrix.test = confusionMatrix(glm.pred.test, data.test$y)
+glm.conf.matrix.test$table
+#Extract tpr, fpr, precision, & accuracy from matrix:
+glm.tpr.test = glm.conf.matrix.test$byClass["Sensitivity"][[1]]
+glm.fpr.test = 1 - glm.conf.matrix.test$byClass["Specificity"][[1]]
+glm.precision.test = glm.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+glm.accuracy.test = glm.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#LDA Model:
+lda.pred.test = rep(0, nrow(data.test))
+lda.pred.test[lda.probs.test[,1] < lda.thresh.test[[1]]] = 1
+lda.pred.test = factor(lda.pred.test, levels=c(0, 1))
+lda.conf.matrix.test = confusionMatrix(lda.pred.test, data.test$y)
+lda.conf.matrix.test$table
+
+lda.tpr.test = lda.conf.matrix.test$byClass["Sensitivity"][[1]]
+lda.fpr.test = 1 - lda.conf.matrix.test$byClass["Specificity"][[1]]
+lda.precision.test = lda.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+lda.accuracy.test = lda.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#QDA Model:
+qda.pred.test = rep(0, nrow(data.test))
+qda.pred.test[qda.probs.test[,1] < qda.thresh.test[[1]]] = 1
+qda.pred.test = factor(qda.pred.test, levels=c(0, 1))
+qda.conf.matrix.test = confusionMatrix(qda.pred.test, data.test$y)
+qda.conf.matrix.test$table
+
+qda.tpr.test = qda.conf.matrix.test$byClass["Sensitivity"][[1]]
+qda.fpr.test = 1 - qda.conf.matrix.test$byClass["Specificity"][[1]]
+qda.precision.test = qda.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+qda.accuracy.test = qda.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#KNN Model:
+knn.pred.test = rep(0, nrow(data.test))
+knn.pred.test[knn.probs.test[,1] < knn.thresh.test[[1]]] = 1
+knn.pred.test = factor(knn.pred.test, levels=c(0, 1))
+knn.conf.matrix.test = confusionMatrix(knn.pred.test, data.test$y)
+knn.conf.matrix.test$table
+
+knn.tpr.test = knn.conf.matrix.test$byClass["Sensitivity"][[1]]
+knn.fpr.test = 1 - knn.conf.matrix.test$byClass["Specificity"][[1]]
+knn.precision.test = knn.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+knn.accuracy.test = knn.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#ElasticNet Model:
+elnet.pred.test = rep(0, nrow(data.test))
+elnet.pred.test[elnet.probs.test[,1] < elnet.thresh.test[[1]]] = 1
+elnet.pred.test = factor(elnet.pred.test, levels=c(0, 1))
+elnet.conf.matrix.test = confusionMatrix(elnet.pred.test, data.test$y)
+elnet.conf.matrix.test$table
+
+elnet.tpr.test = elnet.conf.matrix.test$byClass["Sensitivity"][[1]]
+elnet.fpr.test = 1 - elnet.conf.matrix.test$byClass["Specificity"][[1]]
+elnet.precision.test = elnet.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+elnet.accuracy.test = elnet.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#RandomForest Model:
+rf.pred.test = rep(0, nrow(data.test))
+rf.pred.test[rf.probs.test[,1] < rf.thresh.test[[1]]] = 1
+rf.pred.test = factor(rf.pred.test, levels=c(0, 1))
+rf.conf.matrix.test = confusionMatrix(rf.pred.test, data.test$y)
+rf.conf.matrix.test$table
+
+rf.tpr.test = rf.conf.matrix.test$byClass["Sensitivity"][[1]]
+rf.fpr.test = 1 - rf.conf.matrix.test$byClass["Specificity"][[1]]
+rf.precision.test = rf.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+rf.accuracy.test = rf.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#SVM Model:
+svm.pred.test = rep(0, nrow(data.test))
+svm.pred.test[attr(svm.probs.test, "probabilities")[,1] < svm.thresh.test[[1]]] = 1
+svm.pred.test = factor(svm.pred.test, levels=c(0, 1))
+svm.conf.matrix.test = confusionMatrix(svm.pred.test, data.test$y)
+svm.conf.matrix.test$table
+
+svm.tpr.test = svm.conf.matrix.test$byClass["Sensitivity"][[1]]
+svm.fpr.test = 1 - svm.conf.matrix.test$byClass["Specificity"][[1]]
+svm.precision.test = svm.conf.matrix.test$byClass["Pos Pred Value"][[1]]
+svm.accuracy.test = svm.conf.matrix.test$overall["Accuracy"][[1]]
+
+
+#Create vectors to store model values for our performance table:
+accuracy.test = rep(NULL, 7)
+tpr.test = rep(NULL, 7)
+fpr.test = rep(NULL, 7)
+precision.test = rep(NULL, 7)
+
+#Store the result values:
+accuracy.test[1] = lda.accuracy.test
+accuracy.test[2] = lda.accuracy.test
+accuracy.test[3] = qda.accuracy.test
+accuracy.test[4] = knn.accuracy.test
+accuracy.test[5] = elnet.accuracy.test
+accuracy.test[6] = rf.accuracy.test
+accuracy.test[7] = svm.accuracy.test
+tpr.test[1] = lda.tpr.test
+tpr.test[2] = lda.tpr.test
+tpr.test[3] = qda.tpr.test
+tpr.test[4] = knn.tpr.test
+tpr.test[5] = elnet.tpr.test
+tpr.test[6] = rf.tpr.test
+tpr.test[7] = svm.tpr.test
+fpr.test[1] = lda.fpr.test
+fpr.test[2] = lda.fpr.test
+fpr.test[3] = qda.fpr.test
+fpr.test[4] = knn.fpr.test
+fpr.test[5] = elnet.fpr.test
+fpr.test[6] = rf.fpr.test
+fpr.test[7] = svm.fpr.test
+precision.test[1] = lda.precision.test
+precision.test[2] = lda.precision.test
+precision.test[3] = qda.precision.test
+precision.test[4] = knn.precision.test
+precision.test[5] = elnet.precision.test
+precision.test[6] = rf.precision.test
+precision.test[7] = svm.precision.test
+```
+
+# Results - Holdout Performance Table
+After testing our final models against the holdout data, the resulting performance values are populated in the table below. 
+```{r results holdout, cache=TRUE}
+#Performance Table:
+perform.table.test = data.frame(matrix(ncol=8, nrow=7))
+colnames(perform.table.test) = c('Model', 'Tuning', 'AUROC', 'Threshold', 
+                            'Accuracy', 'TPR', 'FPR', 'Precision')
+
+perform.table.test$Model = c('Log Reg', 'LDA', 'QDA', 'KNN', 'Penalized Log Reg',
+                             'Random Forest', 'SVM')
+
+perform.table.test$Threshold = threshold.test
+perform.table.test$AUROC = auroc.test
+perform.table.test$Accuracy = accuracy.test
+perform.table.test$TPR = tpr.test
+perform.table.test$FPR = fpr.test
+perform.table.test$Precision = precision.test
+perform.table.test$Tuning[4] = perform.table$Tuning[4]
+perform.table.test$Tuning[5] = perform.table$Tuning[5]
+perform.table.test$Tuning[6] = perform.table$Tuning[6]
+perform.table.test$Tuning[7] = perform.table$Tuning[7]
+
+perform.table.test
+```
+
+## Extended Results - Holdout
+In addition to the performance table above, false negative rates were calculated for each of the models below using the holdout data. This additional metric is arguably the most important in terms of maximizing rescues, and was heavily considered in the modeling and decision process as a focus, while being willing to sacrifice some performance on the other metrics. 
+```{r results2 holdout, cache=TRUE}
+
+#Calculate False Negatives:
+glm.fnr.test = glm.conf.matrix.test$table[2,1] / (glm.conf.matrix.test$table[2,1] + 
+                                              glm.conf.matrix.test$table[1,1])
+lda.fnr.test = lda.conf.matrix.test$table[2,1] / (lda.conf.matrix.test$table[2,1] + 
+                                              lda.conf.matrix.test$table[1,1])
+qda.fnr.test = qda.conf.matrix.test$table[2,1] / (qda.conf.matrix.test$table[2,1] + 
+                                              qda.conf.matrix.test$table[1,1])
+knn.fnr.test = knn.conf.matrix.test$table[2,1] / (knn.conf.matrix.test$table[2,1] + 
+                                              knn.conf.matrix.test$table[1,1])
+elnet.fnr.test = elnet.conf.matrix.test$table[2,1] / (elnet.conf.matrix.test$table[2,1] + elnet.conf.matrix.test$table[1,1])
+rf.fnr.test = rf.conf.matrix.test$table[2,1] / (rf.conf.matrix.test$table[2,1] + 
+                                              rf.conf.matrix.test$table[1,1])
+svm.fnr.test = svm.conf.matrix.test$table[2,1] / (svm.conf.matrix.test$table[2,1] + 
+                                             svm.conf.matrix.test$table[1,1])
+
+cat("Logit:", glm.fnr.test, "\n")
+cat("LDA:", lda.fnr.test, "\n")
+cat("QDA:", qda.fnr.test, "\n")
+cat("KNN:", knn.fnr.test, "\n")
+cat("ElasticNet:", elnet.fnr.test, "\n")
+cat("RandomForest:", rf.fnr.test, "\n")
+cat("SVM:", svm.fnr.test)
+```
+
+
+# Conclusions
+
+## Conclusion \#1 - Best Algorithm Performance
+The algorithm that performed the best across the board was Random Forest. It retained the best accuracy and TPR on training data at an incredible 0.9996 and 1, respectively. On holdout data, it had the second best accuracy and TPR at 0.9947 and 0.9979, respectively. It also held the best FPR and Precision rates of any model on train data, though its one downside was FPR dropped off a bit on holdout data. Considering this metric's significance in context, however, falsely identifying an object as blue-tarp is much less severe of a failure than missing a blue tarp altogether. As such, this model could be given some grace on its only identifiable deficiency being FPR. Alternatively, in the extended results, we see that Random Forest also produced the second best false negative rate, arguably a much more important metric in terms of rescue missions.   
+
+
+## Conclusion \#2 - Reconcilable Results
+Comparing training/CV and holdout performances, the results seem to be fairly reconcilable. Most models generalized well to the holdout data and accuracy rates were consistently high for both train and holdout. The models that performed extremely well on train data, like QDA, KNN, and Random Forest were able to carry over that success to the holdout set. The only oddity here was penalized logit regression (elnet), which saw quite a large drop off from train to holdout in both accuracy and TPR. This model, however, seems to be the exception rather than the rule, and may be seeing this difference due to an overfitting with tuning parameters. Another explanation could be that the threshold value wasn't optimally chosen as well, since the model's FPR is all the way at zero, and similarly its precision is exactly 1.  
+
+## Conclusion \#3 - Algorithm Recommendation
+The Random Forest algorithm should be used to detect blue tarps. Not only does it prove to deliver arguably the best performance (see above), but it is also one of the more practical methods to use based on its robustness, interpretability, and speed. Unlike with other methods, there is little to no concern for overfitting, as long as enough trees are used. Increasing this value can put a strain on computing time, but in our case, using just 500 was plenty to make sure the performance had more or less reached a plateau. Speaking of computational efficiency and speed, Random Forests can generally handle large datasets efficiently. It was slower than some other methods to tune, but overall was reasonably quick and was much much quicker than SVM. It could be argued that its outstanding performance is worth a slight bit of extra wait time. In terms of simplicity, Random Forests are fairly straightforward to tune with the mtry parameter, and their predictions are easily interpretable as well. All in all, this makes for a method that is great for identifying tarps as part of a rescue mission, being easy for individuals to pickup and understand, quickly apply to large sets of image data, and receive highly accurate results. 
+
+## Conclusion \#4 - Metric Relevance
+Of the metrics computed in the performance tables, accuracy and TPR are probably the most important and relevant in this context. Obviously, a primary goal is to deliver a highly accurate model that can efficiently find blue tarps. TPR is also extremely relevant because it communicates the probability that an actual blue tarp will be deemed as such. A lower TPR would indicate numerous tarps, and potential rescue opportunities, are being missed. Though it is used to calculate performance rather than express it, threshold is also a very important metric. This value allowed us to skew our models towards avoiding false negatives, which may be the most important metric missing from the table. FNR essentially indicates the model's tendency to miss a tarp, which is just as important if not more so than accuracy of TPR.   
+
+## Conclusion \#5 - Dataset Differences
+Though all of the models seemed to generalize fairly well to the test/holdout dataset, one conclusion that could be drawn from the EDA was the vast differences between the training and holdout data. The density plots suggested the blue tarps in the training set had much greater prevalence of blue pixels than those in the holdout. Furthermore, the overall ranges of pixel values for non-tarp objects (from the boxplots) were were much wider in the training data. This seems to suggest that the images were taken from different regions for these two datasets and that those regions may differ greatly in that 1. the tarps may be of different material or structure giving more or less blue color, and 2. there is a wider range of types of objects and terrain in the "train" region. Further exploration could determine if there should actually be separate models built for different regions within Haiti or if one model is generalizable enough for the whole area.
+
+## Conclusion \#6 - Holdout Data Issues & Extensions
+One takeaway from piecing together the holdout data was the opportunity for error in doing so. After identifying a duplicate data txt file, we determined to toss the file and include only the three tarp data files. Compared to four files for non-tarp data, this simple choice could have greatly impacted the prevalence value for blue tarps. While the calculated prevalence statistics were still nearly identical between train and holdout, it doesn't negate the fact that the nature of having data files split between tarp and non-tarp could lead to issues with how the data is loaded in before training. This also begs the question of whether or not each of these data files originated in a pair representing one image, with one file for all pixels making up a tarp, and the other for the remaining non-tarp pixels. If so, this would suggest a potentially different way of training the data using each image as a CV fold and training the data by image. This may ultimately provide more robust results, training the models on a variety of images from a variety of regions. 
+
